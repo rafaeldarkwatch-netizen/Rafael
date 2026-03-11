@@ -1,0 +1,156 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - email: string (required)
+    //   - name: string (optional)
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // Collection: transactions
+    // Document ID: auto-generated
+    // Fields:
+    //   - userId: string (required, immutable)
+    //   - type: string (required, 'income' or 'expense')
+    //   - amount: number (required, positive)
+    //   - category: string (required)
+    //   - description: string (required)
+    //   - date: timestamp (required)
+    //   - receiptUrl: string (optional)
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // Collection: goals
+    // Document ID: auto-generated
+    // Fields:
+    //   - userId: string (required, immutable)
+    //   - title: string (required)
+    //   - targetAmount: number (required, positive)
+    //   - currentAmount: number (required, positive or zero)
+    //   - deadline: timestamp (optional)
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function uidUnchanged() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    function isValidString(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+             request.resource.data[field].size() >= minLen &&
+             request.resource.data[field].size() <= maxLen;
+    }
+
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+
+    function isPositiveNumber(field) {
+      return request.resource.data[field] is number && request.resource.data[field] > 0;
+    }
+
+    function isNonNegativeNumber(field) {
+      return request.resource.data[field] is number && request.resource.data[field] >= 0;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser() {
+      return hasOnlyAllowedFields(['email', 'name', 'createdAt']) &&
+             request.resource.data.email is string &&
+             isValidOptionalString('name', 1, 100) &&
+             request.resource.data.createdAt is timestamp;
+    }
+
+    function isValidTransaction() {
+      return hasRequiredFields(['userId', 'type', 'amount', 'category', 'description', 'date', 'createdAt']) &&
+             hasOnlyAllowedFields(['userId', 'type', 'amount', 'category', 'description', 'date', 'receiptUrl', 'createdAt']) &&
+             request.resource.data.userId is string &&
+             request.resource.data.type in ['income', 'expense'] &&
+             isPositiveNumber('amount') &&
+             isValidString('category', 1, 50) &&
+             isValidString('description', 1, 200) &&
+             request.resource.data.date is timestamp &&
+             isValidOptionalString('receiptUrl', 1, 1000) &&
+             request.resource.data.createdAt is timestamp;
+    }
+
+    function isValidGoal() {
+      return hasRequiredFields(['userId', 'title', 'targetAmount', 'currentAmount', 'createdAt']) &&
+             hasOnlyAllowedFields(['userId', 'title', 'targetAmount', 'currentAmount', 'deadline', 'createdAt']) &&
+             request.resource.data.userId is string &&
+             isValidString('title', 1, 100) &&
+             isPositiveNumber('targetAmount') &&
+             isNonNegativeNumber('currentAmount') &&
+             (!( 'deadline' in request.resource.data ) || request.resource.data.deadline is timestamp) &&
+             request.resource.data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser();
+      allow update: if isOwner(userId) && isValidUser() && areImmutableFieldsUnchanged(['createdAt']);
+      allow delete: if isOwner(userId);
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && uidUnchanged() && isValidTransaction();
+      allow update: if isDocOwner() && uidNotModified() && isValidTransaction() && areImmutableFieldsUnchanged(['userId', 'createdAt']);
+      allow delete: if isDocOwner();
+    }
+
+    match /goals/{goalId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && uidUnchanged() && isValidGoal();
+      allow update: if isDocOwner() && uidNotModified() && isValidGoal() && areImmutableFieldsUnchanged(['userId', 'createdAt']);
+      allow delete: if isDocOwner();
+    }
+  }
+}
